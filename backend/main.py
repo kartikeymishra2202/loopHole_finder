@@ -18,7 +18,7 @@ app = FastAPI()
 # Enable CORS (Allows your React app to talk to Python)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"], # Your Vite frontend URL
+    allow_origins=["https://loopholetracker.vercel.app"], # Your Vite frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
