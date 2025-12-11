@@ -1,15 +1,28 @@
-import { useState, useEffect } from "react";
-import { Check, Plus, Trash2, Activity, Trophy, Sparkles } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import {
+  Check,
+  Plus,
+  Trash2,
+  Activity,
+  Trophy,
+  LogOut,
+  LayoutGrid,
+  X,
+  Edit3,
+  ArrowUpCircle,
+  ArrowDownCircle,
+} from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-
-// --- Correct Import from your API Service ---
-import { apiService, type Task, type Habit } from "./services/api";
 import "./App.css";
 
+import { apiService, type Task, type Habit } from "./services/api";
+import { CircularProgress } from "./components/CircularProgress";
+import { Analytics } from "./components/Analytics";
+import { AIQuote } from "./components/AIQuote";
 // --- Utilities ---
 const getWeekDays = () => {
   const curr = new Date();
-  const first = curr.getDate() - curr.getDay() + 1; // Start Monday
+  const first = curr.getDate() - curr.getDay() + 1;
   return Array.from({ length: 7 }, (_, i) => {
     const d = new Date(curr);
     d.setDate(first + i);
@@ -19,90 +32,93 @@ const getWeekDays = () => {
 
 const DAYS = getWeekDays();
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-// --- Components ---
-const CircularProgress = ({
-  percentage,
-  size = 80,
-  stroke = 8,
-}: {
-  percentage: number;
-  size?: number;
-  stroke?: number;
-}) => {
-  const radius = (size - stroke) / 2;
-  const circumference = radius * 2 * Math.PI;
-  const offset = circumference - (percentage / 100) * circumference;
-
-  return (
-    <div
-      className="relative flex items-center justify-center"
-      style={{ width: size, height: size }}
-    >
-      <svg className="transform -rotate-90 w-full h-full">
-        <circle
-          className="text-slate-100"
-          strokeWidth={stroke}
-          stroke="currentColor"
-          fill="transparent"
-          r={radius}
-          cx={size / 2}
-          cy={size / 2}
-        />
-        <circle
-          className="text-indigo-600 transition-all duration-1000 ease-out"
-          strokeWidth={stroke}
-          strokeDasharray={circumference}
-          strokeDashoffset={offset}
-          strokeLinecap="round"
-          stroke="currentColor"
-          fill="transparent"
-          r={radius}
-          cx={size / 2}
-          cy={size / 2}
-        />
-      </svg>
-      <span className="absolute text-sm font-bold text-slate-700">
-        {Math.round(percentage)}%
-      </span>
-    </div>
-  );
-};
+const TODAY_DATE = new Date().toISOString().split("T")[0];
 
 export default function App() {
-  // --- State ---
+  // --- Auth State ---
+  const [token, setToken] = useState<string | null>(
+    localStorage.getItem("token")
+  );
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isLoginView, setIsLoginView] = useState(true);
+  const [authError, setAuthError] = useState("");
+
+  // --- App Data State ---
   const [tasks, setTasks] = useState<Task[]>([]);
   const [habits, setHabits] = useState<Habit[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [editingHabitId, setEditingHabitId] = useState<string | null>(null);
 
-  // AI State
-  const [quote, setQuote] = useState<string | null>(null);
-  const [aiLoading, setAiLoading] = useState(false);
+  // --- Auth Handlers ---
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    setLoading(true);
+    try {
+      if (isLoginView) {
+        const data = await apiService.login(email, password);
+        localStorage.setItem("token", data.access_token);
+        setToken(data.access_token);
+      } else {
+        await apiService.signup(email, password);
+        alert("Account created! Please login.");
+        setIsLoginView(true);
+      }
+    } catch (err) {
+      if (err instanceof Error) setAuthError(err.message);
+      else setAuthError("Authentication failed");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  // --- Initial Data Load ---
+  const logout = () => {
+    localStorage.removeItem("token");
+    setToken(null);
+    setTasks([]);
+    setHabits([]);
+    setEmail("");
+    setPassword("");
+  };
+
+  // --- Data Loading ---
   useEffect(() => {
+    if (!token) return;
     const loadData = async () => {
+      setLoading(true);
       try {
         const [t, h] = await Promise.all([
           apiService.getTasks(),
           apiService.getHabits(),
         ]);
         setTasks(t);
-        setHabits(h);
+
+        // Habit Filling Logic
+        const filledHabits = [...h];
+        if (filledHabits.length < 4) {
+          while (filledHabits.length < 4) {
+            filledHabits.push({
+              id: `temp_${filledHabits.length}_${crypto.randomUUID()}`,
+              name: "Click to Edit",
+              completedDates: [],
+            });
+          }
+        }
+        setHabits(filledHabits.slice(0, 4));
       } catch (err) {
-        console.error("Failed to connect to backend:", err);
+        console.error("Failed to load data:", err);
+        if (err instanceof Error && err.message === "Unauthorized") logout();
       } finally {
         setLoading(false);
       }
     };
     loadData();
-  }, []);
+  }, [token]);
 
-  // --- Handlers (Optimistic UI + Backend Sync) ---
-
+  // --- Handlers ---
   const addTask = async (date: string, text: string) => {
     if (!text.trim()) return;
-
     const newTask: Task = {
       id: crypto.randomUUID(),
       text,
@@ -110,12 +126,7 @@ export default function App() {
       date,
       createdAt: new Date().toISOString(),
     };
-
-    // 1. Show immediately (Optimistic UI)
     setTasks((prev) => [...prev, newTask]);
-    setQuote(null); // Reset quote on new task
-
-    // 2. Save to Backend in background
     await apiService.createTask(newTask);
   };
 
@@ -123,25 +134,22 @@ export default function App() {
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
     const newStatus = !task.isCompleted;
-
-    // 1. Optimistic Update
     setTasks((prev) =>
       prev.map((t) => (t.id === taskId ? { ...t, isCompleted: newStatus } : t))
     );
-
-    // 2. Send update to Backend
     await apiService.updateTask(taskId, { isCompleted: newStatus });
   };
 
   const deleteTask = async (taskId: string) => {
-    // 1. Optimistic Update
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
-
-    // 2. Delete from Backend
     await apiService.deleteTask(taskId);
   };
 
   const toggleHabit = async (habitId: string, date: string) => {
+    if (habitId.startsWith("temp_")) {
+      alert("Please rename this habit first!");
+      return;
+    }
     const habit = habits.find((h) => h.id === habitId);
     if (!habit) return;
 
@@ -149,150 +157,193 @@ export default function App() {
     const newDates = isCompleted
       ? habit.completedDates.filter((d) => d !== date)
       : [...habit.completedDates, date];
-
     const updatedHabit = { ...habit, completedDates: newDates };
-
-    // 1. Optimistic Update
     setHabits((prev) => prev.map((h) => (h.id === habitId ? updatedHabit : h)));
-
-    // 2. Update Backend
     await apiService.updateHabit(updatedHabit);
   };
 
-  // --- AI Logic ---
-  useEffect(() => {
-    const today = new Date().toISOString().split("T")[0];
-    const todaysTasks = tasks.filter((t) => t.date === today);
-    if (todaysTasks.length === 0) return;
+  const saveHabitName = async (habitId: string, newName: string) => {
+    setEditingHabitId(null);
+    if (!newName.trim()) return;
 
-    const completedCount = todaysTasks.filter((t) => t.isCompleted).length;
-    const progress = completedCount / todaysTasks.length;
+    const isTemp = habitId.startsWith("temp_");
+    let updatedHabit: Habit;
 
-    const fetchAI = async (type: "encouragement" | "celebration") => {
-      // Don't fetch if quote already exists to avoid spamming API
-      if (quote) return;
-
-      setAiLoading(true);
-      const msg = await apiService.getMotivation(
-        completedCount,
-        todaysTasks.length,
-        type
+    if (isTemp) {
+      const realId = crypto.randomUUID();
+      updatedHabit = { id: realId, name: newName, completedDates: [] };
+      setHabits((prev) =>
+        prev.map((h) => (h.id === habitId ? updatedHabit : h))
       );
-      setQuote(msg);
-      setAiLoading(false);
-    };
+      await apiService.createHabit(updatedHabit);
+    } else {
+      const habit = habits.find((h) => h.id === habitId);
+      if (!habit) return;
+      updatedHabit = { ...habit, name: newName };
+      setHabits((prev) =>
+        prev.map((h) => (h.id === habitId ? updatedHabit : h))
+      );
+      await apiService.updateHabit(updatedHabit);
+    }
+  };
 
-    if (progress === 1) fetchAI("celebration");
-    else if (progress >= 0.75 && progress < 0.9) fetchAI("encouragement");
-  }, [tasks, quote]); // dependencies
+  // --- METRICS ---
+  const dailyTasks = tasks.filter((t) => t.date === TODAY_DATE);
+  const dailyTotal = dailyTasks.length;
+  const dailyCompleted = dailyTasks.filter((t) => t.isCompleted).length;
+  const dailyProgress =
+    dailyTotal === 0 ? 0 : (dailyCompleted / dailyTotal) * 100;
 
-  // --- Metrics Calculation ---
-  const totalTasks = tasks.length;
-  const completedTasks = tasks.filter((t) => t.isCompleted).length;
-  const overallProgress =
-    totalTasks === 0 ? 0 : (completedTasks / totalTasks) * 100;
-
-  if (loading)
+  // --- RENDER LOGIN ---
+  if (!token) {
     return (
-      <div className="flex h-screen items-center justify-center bg-slate-50 text-slate-400">
-        Loading FocusLab...
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4 font-sans">
+        <div className="bg-white p-8 rounded-2xl shadow-[0_2px_20px_-5px_rgba(0,0,0,0.1)] w-full max-w-sm border border-slate-100">
+          <div className="flex justify-center mb-6 text-indigo-600">
+            <LayoutGrid size={40} />
+          </div>
+          <h1 className="text-2xl font-bold text-slate-900 mb-2 text-center tracking-tight">
+            {isLoginView ? "Welcome back" : "Create account"}
+          </h1>
+          <form onSubmit={handleAuth} className="space-y-4">
+            <input
+              type="email"
+              required
+              placeholder="name@example.com"
+              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <input
+              type="password"
+              required
+              placeholder="Password"
+              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            {authError && (
+              <p className="text-xs text-red-500 text-center font-medium bg-red-50 py-2 rounded-lg">
+                {authError}
+              </p>
+            )}
+            <button
+              disabled={loading}
+              className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all disabled:opacity-50"
+            >
+              {loading ? "Processing..." : isLoginView ? "Sign In" : "Sign Up"}
+            </button>
+          </form>
+          <div className="mt-6 pt-6 border-t border-slate-100 text-center">
+            <button
+              onClick={() => {
+                setIsLoginView(!isLoginView);
+                setAuthError("");
+              }}
+              className="text-sm text-slate-500 hover:text-indigo-600 font-medium"
+            >
+              {isLoginView
+                ? "Don't have an account? Sign up"
+                : "Already have an account? Sign in"}
+            </button>
+          </div>
+        </div>
       </div>
     );
+  }
 
+  // --- RENDER DASHBOARD ---
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 p-4 md:p-8 font-sans selection:bg-indigo-100">
+      <style>{`.no-scrollbar::-webkit-scrollbar { display: none; } .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }`}</style>
+
       <div className="max-w-[1400px] mx-auto space-y-6">
-        {/* --- Header & AI Quote --- */}
+        {/* Header */}
         <header className="flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
-              FocusLab{" "}
+              FocusLab
               <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold uppercase tracking-wide">
-                Weekly
+                Beta
               </span>
             </h1>
             <p className="text-slate-500 mt-1">
               Design your life, one day at a time.
             </p>
           </div>
+          <div className="flex items-center gap-4">
+            <AIQuote tasks={tasks} token={token} />
 
-          {/* AI Quote Banner */}
-          <AnimatePresence>
-            {(quote || aiLoading) && (
-              <motion.div
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                className="flex items-center gap-3 bg-white border border-indigo-100 shadow-sm px-4 py-3 rounded-xl max-w-lg"
-              >
-                <div className="bg-indigo-600 text-white p-2 rounded-lg">
-                  <Sparkles size={16} />
-                </div>
-                <div>
-                  <div className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider">
-                    {aiLoading ? "Consulting AI..." : "Focus Assistant"}
-                  </div>
-                  <p className="text-sm font-medium text-slate-700 leading-tight">
-                    {aiLoading ? "Analyzing your progress..." : `"${quote}"`}
-                  </p>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+            <button
+              onClick={logout}
+              className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-500 hover:text-red-500 hover:border-red-200 transition-all shadow-sm"
+            >
+              <LogOut size={14} /> Logout
+            </button>
+          </div>
         </header>
 
-        {/* --- Top Dashboard Section --- */}
+        {/* Top Section */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* 1. Overall Metrics Card (3 cols) */}
+          {/* Daily Analysis */}
           <div className="lg:col-span-3 bg-white p-6 rounded-2xl shadow-[0_2px_20px_-5px_rgba(0,0,0,0.05)] border border-slate-100 flex flex-col justify-between">
             <div className="flex justify-between items-start">
               <div>
                 <h3 className="text-xs font-bold uppercase text-slate-400 tracking-wider flex items-center gap-2">
-                  <Activity size={14} /> Total Progress
+                  <Activity size={14} /> Today's Insight
                 </h3>
                 <div className="mt-2 text-3xl font-bold text-slate-900">
-                  {completedTasks}
-                  <span className="text-slate-300 text-xl">/{totalTasks}</span>
+                  {dailyCompleted}
+                  <span className="text-slate-300 text-xl">/{dailyTotal}</span>
+                </div>
+                <div className="text-xs text-slate-400 mt-1 font-medium">
+                  {dailyTotal - dailyCompleted} tasks remaining
                 </div>
               </div>
               <CircularProgress
-                percentage={overallProgress}
+                percentage={dailyProgress}
                 size={70}
                 stroke={6}
               />
             </div>
-
             <div className="mt-6 pt-6 border-t border-slate-50">
               <div className="flex items-center justify-between text-sm mb-2">
                 <span className="font-medium text-slate-500">
-                  Weekly Efficiency
+                  Day Efficiency
                 </span>
                 <span className="font-bold text-indigo-600">
-                  {Math.round(overallProgress)}%
+                  {Math.round(dailyProgress)}%
                 </span>
               </div>
               <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
                 <div
                   className="bg-indigo-600 h-full rounded-full transition-all duration-1000"
-                  style={{ width: `${overallProgress}%` }}
+                  style={{ width: `${dailyProgress}%` }}
                 ></div>
               </div>
             </div>
           </div>
 
-          {/* 2. Habit Tracker Table (9 cols) */}
+          {/* Habit Tracker */}
           <div className="lg:col-span-9 bg-white p-6 rounded-2xl shadow-[0_2px_20px_-5px_rgba(0,0,0,0.05)] border border-slate-100 overflow-x-auto">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-6 mb-4">
               <h3 className="text-xs font-bold uppercase text-slate-400 tracking-wider flex items-center gap-2">
                 <Trophy size={14} /> Habits
               </h3>
+              <div className="flex gap-4">
+                <span className="text-[10px] font-bold px-2 py-1 bg-green-50 text-green-700 rounded-md flex items-center gap-1">
+                  <ArrowUpCircle size={12} /> Build
+                </span>
+                <span className="text-[10px] font-bold px-2 py-1 bg-red-50 text-red-700 rounded-md flex items-center gap-1">
+                  <ArrowDownCircle size={12} /> Break
+                </span>
+              </div>
             </div>
-
             <table className="w-full min-w-[600px]">
               <thead>
                 <tr>
                   <th className="text-left text-sm font-semibold text-slate-400 pb-4 pl-2">
-                    Daily Goal
+                    Goal Name
                   </th>
                   {DAYS.map((date, i) => (
                     <th key={date} className="pb-4 text-center">
@@ -302,7 +353,7 @@ export default function App() {
                         </span>
                         <span
                           className={`text-xs font-semibold mt-1 ${
-                            date === new Date().toISOString().split("T")[0]
+                            date === TODAY_DATE
                               ? "text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md"
                               : "text-slate-600"
                           }`}
@@ -315,43 +366,89 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {habits.map((habit) => (
-                  <tr
-                    key={habit.id}
-                    className="group hover:bg-slate-50/50 transition-colors"
-                  >
-                    <td className="py-3 pl-2 text-sm font-medium text-slate-700 border-t border-slate-50">
-                      {habit.name}
-                    </td>
-                    {DAYS.map((date) => {
-                      const isDone = habit.completedDates.includes(date);
-                      return (
-                        <td
-                          key={date}
-                          className="text-center border-t border-slate-50 py-2"
-                        >
-                          <button
-                            onClick={() => toggleHabit(habit.id, date)}
-                            className={`w-8 h-8 rounded-lg inline-flex items-center justify-center transition-all duration-200 ${
-                              isDone
-                                ? "bg-indigo-600 text-white shadow-md shadow-indigo-200 scale-100"
-                                : "bg-slate-100 text-slate-300 hover:bg-slate-200 hover:text-slate-400 scale-90"
-                            }`}
+                {habits.slice(0, 4).map((habit, index) => {
+                  const isBadHabit = index >= 2;
+                  return (
+                    <tr
+                      key={habit.id}
+                      className="group hover:bg-slate-50/50 transition-colors"
+                    >
+                      <td className="py-3 pl-2 text-sm font-medium text-slate-700 border-t border-slate-50 relative">
+                        {editingHabitId === habit.id ? (
+                          <input
+                            autoFocus
+                            className="border border-indigo-300 rounded px-2 py-1 text-xs w-32 outline-none focus:ring-2 focus:ring-indigo-100"
+                            defaultValue={habit.name}
+                            onBlur={(e) =>
+                              saveHabitName(habit.id, e.target.value)
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter")
+                                saveHabitName(habit.id, e.currentTarget.value);
+                            }}
+                          />
+                        ) : (
+                          <div
+                            className="flex items-center gap-2 group/edit cursor-pointer"
+                            onClick={() => setEditingHabitId(habit.id)}
                           >
-                            <Check size={16} strokeWidth={3} />
-                          </button>
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
+                            <span
+                              className={
+                                isBadHabit ? "text-red-700" : "text-slate-700"
+                              }
+                            >
+                              {habit.name}
+                            </span>
+                            <Edit3
+                              size={12}
+                              className="opacity-0 group-hover/edit:opacity-100 text-slate-400"
+                            />
+                          </div>
+                        )}
+                        <span
+                          className={`text-[9px] absolute -left-1 top-4 -translate-x-full font-bold uppercase ${
+                            isBadHabit ? "text-red-300" : "text-green-300"
+                          }`}
+                        >
+                          {isBadHabit ? "BAD" : "GOOD"}
+                        </span>
+                      </td>
+                      {DAYS.map((date) => {
+                        const isDone = habit.completedDates.includes(date);
+                        return (
+                          <td
+                            key={date}
+                            className="text-center border-t border-slate-50 py-2"
+                          >
+                            <button
+                              onClick={() => toggleHabit(habit.id, date)}
+                              className={`w-8 h-8 rounded-lg inline-flex items-center justify-center transition-all duration-200 ${
+                                isDone
+                                  ? isBadHabit
+                                    ? "bg-red-500 text-white shadow-md shadow-red-200"
+                                    : "bg-indigo-600 text-white shadow-md shadow-indigo-200"
+                                  : "bg-slate-100 text-slate-300 hover:bg-slate-200 hover:text-slate-400 scale-90"
+                              }`}
+                            >
+                              {isBadHabit ? (
+                                <X size={16} strokeWidth={3} />
+                              ) : (
+                                <Check size={16} strokeWidth={3} />
+                              )}
+                            </button>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </div>
 
-        {/* --- Bottom Section: Daily Columns --- */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4 min-h-[500px]">
+        {/* Middle Section: Daily Columns  */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4">
           {DAYS.map((date, index) => {
             const dayTasks = tasks.filter((t) => t.date === date);
             const dayCompleted = dayTasks.filter((t) => t.isCompleted).length;
@@ -359,20 +456,19 @@ export default function App() {
               dayTasks.length === 0
                 ? 0
                 : (dayCompleted / dayTasks.length) * 100;
-            const isToday = new Date().toISOString().split("T")[0] === date;
+            const isToday = date === TODAY_DATE;
 
             return (
               <div
                 key={date}
-                className={`flex flex-col h-full rounded-2xl border transition-all duration-300 ${
+                className={`flex flex-col h-[520px] rounded-2xl border transition-all duration-300 ${
                   isToday
                     ? "bg-white border-indigo-200 shadow-xl shadow-indigo-100/50 ring-1 ring-indigo-50 z-10 scale-[1.02]"
                     : "bg-slate-50/50 border-slate-200 hover:bg-white hover:border-slate-300 hover:shadow-lg"
                 }`}
               >
-                {/* Column Header */}
                 <div
-                  className={`p-4 rounded-t-2xl border-b ${
+                  className={`p-4 rounded-t-2xl border-b shrink-0 ${
                     isToday
                       ? "bg-indigo-50/50 border-indigo-100"
                       : "bg-transparent border-slate-100"
@@ -400,9 +496,7 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-
-                {/* Task List Area */}
-                <div className="p-3 flex-1 flex flex-col gap-2 overflow-y-auto max-h-[500px]">
+                <div className="p-3 flex-1 flex flex-col gap-2 overflow-y-auto min-h-0 no-scrollbar">
                   <AnimatePresence mode="popLayout">
                     {dayTasks.map((task) => (
                       <motion.div
@@ -411,7 +505,7 @@ export default function App() {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.9 }}
                         key={task.id}
-                        className={`group flex items-start gap-3 p-3 rounded-xl border shadow-sm transition-all ${
+                        className={`group flex items-start gap-3 p-3 rounded-xl border shadow-sm transition-all shrink-0 ${
                           task.isCompleted
                             ? "bg-slate-50 border-slate-100 opacity-60"
                             : "bg-white border-slate-100 hover:border-indigo-200 hover:shadow-md"
@@ -452,9 +546,7 @@ export default function App() {
                     ))}
                   </AnimatePresence>
                 </div>
-
-                {/* Input Area */}
-                <div className="p-3 mt-auto">
+                <div className="p-3 mt-auto shrink-0">
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
@@ -484,6 +576,8 @@ export default function App() {
             );
           })}
         </div>
+
+        <Analytics tasks={tasks} />
       </div>
     </div>
   );

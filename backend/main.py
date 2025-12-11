@@ -1,122 +1,149 @@
 import os
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field
-import google.generativeai as genai
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# --- Configuration ---
+from ai_service import generate_motivation
+import auth 
+
+
 load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# --- App Setup ---
+
+
 app = FastAPI()
 
-# Enable CORS (Allows your React app to talk to Python)
+# 3. CORS Configuration
+frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+origins = [url.strip() for url in frontend_url.split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://loopholetracker.vercel.app"], # Your Vite frontend URL
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Database Connection ---
+# 4. Database Setup
 client = AsyncIOMotorClient(MONGO_URI)
 db = client.focuslab
+users_collection = db.users
 tasks_collection = db.tasks
 habits_collection = db.habits
 
-# --- Models (Data Structure) ---
+# 5. Auth Dependency
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    username = auth.verify_token(token)
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return username
+
+# 6. Models
+class UserAuth(BaseModel):
+    email: str
+    password: str
+
 class Task(BaseModel):
     id: str
     text: str
     isCompleted: bool
     date: str
     createdAt: str
+    user_id: str | None = None
 
 class Habit(BaseModel):
     id: str
     name: str
     completedDates: List[str] = []
+    user_id: str | None = None
 
 class MotivationRequest(BaseModel):
     completed_count: int
     total_count: int
     type: str  # 'encouragement' or 'celebration'
 
-# --- AI Configuration ---
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+# --- ROUTES: AUTH ---
 
-# --- Routes: TASKS ---
+@app.post("/signup")
+async def signup(user: UserAuth):
+    existing_user = await users_collection.find_one({"email": user.email})
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    hashed_password = auth.get_password_hash(user.password)
+    await users_collection.insert_one({"email": user.email, "password": hashed_password})
+    return {"message": "User created successfully"}
+
+@app.post("/login")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = await users_collection.find_one({"email": form_data.username})
+    if not user or not auth.verify_password(form_data.password, user["password"]):
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+    
+    access_token = auth.create_access_token(data={"sub": user["email"]})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+# --- ROUTES: TASKS ---
 
 @app.get("/tasks", response_model=List[Task])
-async def get_tasks():
-    tasks = await tasks_collection.find().to_list(1000)
-    return tasks
+async def get_tasks(current_user: str = Depends(get_current_user)):
+    return await tasks_collection.find({"user_id": current_user}).to_list(1000)
 
-@app.post("/tasks", response_model=Task)
-async def create_task(task: Task):
+@app.post("/tasks")
+async def create_task(task: Task, current_user: str = Depends(get_current_user)):
+    task.user_id = current_user
     await tasks_collection.insert_one(task.dict())
     return task
 
 @app.put("/tasks/{task_id}")
-async def update_task(task_id: str, update: dict = Body(...)):
-    # We only update specific fields like isCompleted
-    await tasks_collection.update_one({"id": task_id}, {"$set": update})
+async def update_task(task_id: str, update: dict, current_user: str = Depends(get_current_user)):
+    result = await tasks_collection.update_one(
+        {"id": task_id, "user_id": current_user}, 
+        {"$set": update}
+    )
+    if result.modified_count == 0:
+         raise HTTPException(status_code=404, detail="Task not found")
     return {"status": "updated"}
 
 @app.delete("/tasks/{task_id}")
-async def delete_task(task_id: str):
-    await tasks_collection.delete_one({"id": task_id})
+async def delete_task(task_id: str, current_user: str = Depends(get_current_user)):
+    await tasks_collection.delete_one({"id": task_id, "user_id": current_user})
     return {"status": "deleted"}
 
-# --- Routes: HABITS ---
+# --- ROUTES: HABITS ---
 
 @app.get("/habits", response_model=List[Habit])
-async def get_habits():
-    habits = await habits_collection.find().to_list(100)
-    # Seed default habits if empty
-    if not habits:
-        defaults = [
-            {"id": "h1", "name": "Wake up 6am", "completedDates": []},
-            {"id": "h2", "name": "No A**", "completedDates": []},
-            {"id": "h3", "name": "NO dopamine", "completedDates": []},
-        ]
-        await habits_collection.insert_many(defaults)
-        return defaults
+async def get_habits(current_user: str = Depends(get_current_user)):
+    habits = await habits_collection.find({"user_id": current_user}).to_list(100)
     return habits
 
-@app.put("/habits/{habit_id}")
-async def update_habit(habit_id: str, habit: Habit):
-    await habits_collection.replace_one({"id": habit_id}, habit.dict())
+@app.post("/habits")
+async def create_habit(habit: Habit, current_user: str = Depends(get_current_user)):
+    habit.user_id = current_user
+    await habits_collection.insert_one(habit.dict())
     return habit
 
-# --- Routes: AI ---
+@app.put("/habits/{habit_id}")
+async def update_habit(habit_id: str, habit: Habit, current_user: str = Depends(get_current_user)):
+    habit.user_id = current_user
+    await habits_collection.replace_one({"id": habit_id, "user_id": current_user}, habit.dict())
+    return habit
+
+# --- ROUTES: AI ---
 
 @app.post("/ai/motivation")
-async def get_motivation(req: MotivationRequest):
-    if not GEMINI_API_KEY:
-        return {"message": "Great job! (Configure API Key for AI)"}
-    
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        prompt = ""
-        if req.type == 'celebration':
-            prompt = f"I just finished 100% of my daily tasks ({req.total_count} tasks). Give me a short, punchy, professional congratulatory message (max 1 sentence)."
-        else:
-            prompt = f"I have completed {req.completed_count} out of {req.total_count} tasks today. Give me a short, stern but motivating stoic quote to finish the work. (max 1 sentence)."
-            
-        response = model.generate_content(prompt)
-        return {"message": response.text}
-    except Exception as e:
-        print(f"AI Error: {e}")
-        return {"message": "Stay focused. Keep pushing."}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+async def get_motivation_route(req: MotivationRequest, current_user: str = Depends(get_current_user)):
+    # Call the service function
+    return {"message": await generate_motivation(req.completed_count, req.total_count, req.type)}
