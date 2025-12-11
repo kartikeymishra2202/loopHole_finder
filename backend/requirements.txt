@@ -4,3 +4,7 @@ motor
 pydantic
 python-dotenv
 google-generativeai
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart
+bcrypt==4.0.1
