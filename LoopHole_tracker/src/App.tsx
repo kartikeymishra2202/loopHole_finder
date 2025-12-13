@@ -48,10 +48,6 @@ export default function App() {
   const [quote, setQuote] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
 
-  // --- FIX: Prevent Re-fetching Flags ---
-  const [fetchedEncouragement, setFetchedEncouragement] = useState(false);
-  const [fetchedCelebration, setFetchedCelebration] = useState(false);
-
   // --- Auth Handlers ---
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,9 +78,6 @@ export default function App() {
     setHabits([]);
     setEmail("");
     setPassword("");
-    // Reset flags on logout
-    setFetchedEncouragement(false);
-    setFetchedCelebration(false);
   };
 
   // --- Data Loading ---
@@ -120,7 +113,7 @@ export default function App() {
     loadData();
   }, [token]);
 
-  // --- AI Logic (Fixed to run ONCE per threshold) ---
+  // --- AI Logic (PERSISTED LIMIT: Once per day) ---
   useEffect(() => {
     if (!token) return;
     const todaysTasks = tasks.filter((t) => t.date === TODAY_DATE);
@@ -129,7 +122,13 @@ export default function App() {
     const completedCount = todaysTasks.filter((t) => t.isCompleted).length;
     const progress = completedCount / todaysTasks.length;
 
+    // Keys for LocalStorage (Unique per day)
+    const encouragementKey = `ai_encouragement_${TODAY_DATE}`;
+    const celebrationKey = `ai_celebration_${TODAY_DATE}`;
+
     const fetchAI = async (type: "encouragement" | "celebration") => {
+      if (aiLoading) return;
+
       setAiLoading(true);
       try {
         const msg = await apiService.getMotivation(
@@ -138,6 +137,12 @@ export default function App() {
           type
         );
         setQuote(msg);
+
+        // SAVE FLAG TO LOCAL STORAGE
+        if (type === "encouragement")
+          localStorage.setItem(encouragementKey, "true");
+        if (type === "celebration")
+          localStorage.setItem(celebrationKey, "true");
       } catch (error) {
         console.error("AI Fetch Error", error);
       } finally {
@@ -145,17 +150,23 @@ export default function App() {
       }
     };
 
-    // Trigger 1: Celebration (100%) - Run ONLY if not fetched yet
-    if (progress === 1 && !fetchedCelebration) {
-      setFetchedCelebration(true); // Mark as done immediately
-      fetchAI("celebration");
+    // Trigger 1: Celebration (100%)
+    if (progress === 1) {
+      const alreadyFetched = localStorage.getItem(celebrationKey);
+      if (!alreadyFetched) {
+        fetchAI("celebration");
+      }
     }
-    // Trigger 2: Encouragement (75-99%) - Run ONLY if not fetched yet
-    else if (progress >= 0.75 && progress < 1 && !fetchedEncouragement) {
-      setFetchedEncouragement(true); // Mark as done immediately
-      fetchAI("encouragement");
+    // Trigger 2: Encouragement (75-99%)
+    else if (progress >= 0.75 && progress < 1) {
+      const alreadyFetched = localStorage.getItem(encouragementKey);
+      const alreadyCelebrated = localStorage.getItem(celebrationKey); // Don't encourage if already celebrated
+
+      if (!alreadyFetched && !alreadyCelebrated) {
+        fetchAI("encouragement");
+      }
     }
-  }, [tasks, token, fetchedCelebration, fetchedEncouragement]);
+  }, [tasks, token]); // Removed quote/aiLoading dependency to rely purely on data state
 
   // --- Handlers ---
   const addTask = async (date: string, text: string) => {
