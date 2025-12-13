@@ -2,14 +2,17 @@ import React, { useState, useEffect } from "react";
 import { LogOut } from "lucide-react";
 import "./App.css";
 
+
 import { apiService, type Task, type Habit } from "./services/api";
+
 
 import { AuthScreen } from "./components/AuthScreen";
 import { DailyStats } from "./components/DailyStats";
 import { HabitTracker } from "./components/HabbitTracker";
 import { WeekGrid } from "./components/WeekDays";
 import { Analytics } from "./components/Analytics";
-import { AIQuote } from "./components/AIQuote";
+// --- IMPORT THE NEW COMPONENT ---
+import { AINotification } from "./components/AINotification";
 
 // --- Utilities ---
 const getWeekDays = () => {
@@ -41,6 +44,10 @@ export default function App() {
   const [habits, setHabits] = useState<Habit[]>([]);
   const [loading, setLoading] = useState(false);
   const [editingHabitId, setEditingHabitId] = useState<string | null>(null);
+
+  // --- AI State (Restored) ---
+  const [quote, setQuote] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
 
   // --- Auth Handlers ---
   const handleAuth = async (e: React.FormEvent) => {
@@ -86,7 +93,6 @@ export default function App() {
         ]);
         setTasks(t);
 
-        // Habit Filling Logic
         const filledHabits = [...h];
         if (filledHabits.length < 4) {
           while (filledHabits.length < 4) {
@@ -107,6 +113,43 @@ export default function App() {
     };
     loadData();
   }, [token]);
+
+ 
+  useEffect(() => {
+    if (!token) return;
+    const todaysTasks = tasks.filter((t) => t.date === TODAY_DATE);
+    if (todaysTasks.length === 0) return;
+
+    const completedCount = todaysTasks.filter((t) => t.isCompleted).length;
+    const progress = completedCount / todaysTasks.length;
+
+    const fetchAI = async (type: "encouragement" | "celebration") => {
+      if (quote || aiLoading) return; // Prevent multiple fetches
+
+      setAiLoading(true);
+      try {
+        const msg = await apiService.getMotivation(
+          completedCount,
+          todaysTasks.length,
+          type
+        );
+        setQuote(msg);
+      } catch (error) {
+        console.error("AI Fetch Error", error);
+      } finally {
+        setAiLoading(false);
+      }
+    };
+
+    if (progress === 1) {
+      fetchAI("celebration");
+    } else if (progress >= 0.75 && progress < 1) {
+      fetchAI("encouragement");
+    } else if (progress < 0.75 && quote) {
+      
+      setQuote(null);
+    }
+  }, [tasks, token, quote, aiLoading]);
 
   // --- Handlers ---
   const addTask = async (date: string, text: string) => {
@@ -198,8 +241,11 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 p-4 md:p-8 font-sans selection:bg-indigo-100">
+    <div className="min-h-screen bg-slate-50 text-slate-800 p-4 md:p-8 font-sans selection:bg-indigo-100 relative">
       <style>{`.no-scrollbar::-webkit-scrollbar { display: none; } .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }`}</style>
+
+      
+      <AINotification quote={quote} onClose={() => setQuote(null)} />
 
       <div className="max-w-[1400px] mx-auto space-y-6">
         {/* Header */}
@@ -216,7 +262,7 @@ export default function App() {
             </p>
           </div>
           <div className="flex items-center gap-4">
-            <AIQuote tasks={tasks} token={token} />
+           
             <button
               onClick={logout}
               className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-500 hover:text-red-500 hover:border-red-200 transition-all shadow-sm"
