@@ -1,4 +1,3 @@
-import React from "react";
 import { Activity } from "lucide-react";
 import { CircularProgress } from "./CircularProgress";
 import { type Task } from "../services/api";

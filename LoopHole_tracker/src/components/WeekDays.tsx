@@ -1,4 +1,3 @@
-import React from "react";
 import { Plus, Check, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { CircularProgress } from "./CircularProgress";
