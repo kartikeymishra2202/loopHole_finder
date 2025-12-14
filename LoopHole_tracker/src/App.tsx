@@ -16,10 +16,16 @@ import { AINotification } from "./components/AINotification";
 // --- Utilities ---
 const getWeekDays = () => {
   const curr = new Date();
-  const first = curr.getDate() - curr.getDay() + 1; // Start Monday
+  const day = curr.getDay();
+
+  // logic: if Sunday (0), subtract 6 days. Else subtract (day - 1)
+  const diff = curr.getDate() - day + (day === 0 ? -6 : 1);
+
+  const monday = new Date(curr.setDate(diff)); // Set to the Monday of THIS week
+
   return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(curr);
-    d.setDate(first + i);
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
     return d.toISOString().split("T")[0];
   });
 };
